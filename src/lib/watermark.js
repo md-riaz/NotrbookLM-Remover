@@ -70,6 +70,11 @@ export async function getVideoMetadata(file) {
 
 const SEEK_EPSILON = 0.001;
 const SEEK_TIMEOUT_MS = 1500;
+const SEEK_MAX_OFFSET_SECONDS = 0.05;
+const WATERMARK_LUMA_REFERENCE = 170;
+const WATERMARK_VARIANCE_THRESHOLD = 60;
+const MIN_SEGMENT_DURATION_SECONDS = 0.1;
+const SEGMENT_PADDING_SECONDS = 0.2;
 
 function waitForSeek(video, targetTime) {
   if (Math.abs(video.currentTime - targetTime) < SEEK_EPSILON) {
@@ -123,7 +128,7 @@ export async function detectDynamicDelogoFilter(file, metadata) {
 
   for (let i = 0; i < sampleCount; i += 1) {
     const t = (metadata.duration * i) / Math.max(1, sampleCount - 1);
-    const safeTime = Math.min(Math.max(t, 0), Math.max(metadata.duration - 0.05, 0));
+    const safeTime = Math.min(Math.max(t, 0), Math.max(metadata.duration - SEEK_MAX_OFFSET_SECONDS, 0));
     video.currentTime = safeTime;
     await waitForSeek(video, safeTime);
 
@@ -132,10 +137,10 @@ export async function detectDynamicDelogoFilter(file, metadata) {
     let variance = 0;
     for (let j = 0; j < data.length; j += 4) {
       const lum = 0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2];
-      variance += Math.abs(lum - 170);
+      variance += Math.abs(lum - WATERMARK_LUMA_REFERENCE);
     }
     variance /= Math.max(1, data.length / 4);
-    markers.push({ t, likelyVisible: variance < 60 });
+    markers.push({ t, likelyVisible: variance < WATERMARK_VARIANCE_THRESHOLD });
   }
 
   URL.revokeObjectURL(probeUrl);
@@ -148,7 +153,9 @@ export async function detectDynamicDelogoFilter(file, metadata) {
 
     if (start !== null && closing) {
       const end = markers[i].likelyVisible ? markers[i].t : markers[Math.max(i - 1, 0)].t;
-      if (end - start >= 0.1) segments.push([start, end + 0.2]);
+      if (end - start >= MIN_SEGMENT_DURATION_SECONDS) {
+        segments.push([start, end + SEGMENT_PADDING_SECONDS]);
+      }
       start = null;
     }
   }

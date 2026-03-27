@@ -18,6 +18,7 @@ import {
 export default function App() {
   const ffmpegRef = useRef(null);
   const isFfmpegLoadedRef = useRef(false);
+  const isMountedRef = useRef(false);
   const [state, setState] = useState(initialState);
   const [preset, setPreset] = useState('balanced');
   const [removeEnding, setRemoveEnding] = useState(true);
@@ -28,14 +29,26 @@ export default function App() {
 
   const hasInput = Boolean(state.file);
 
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const fileLabel = useMemo(() => {
     if (!state.file) return 'Drop an MP4 file here, or click to browse.';
     return `${state.file.name} (${(state.file.size / MB).toFixed(2)} MB)`;
   }, [state.file]);
 
-  const appendLog = (line) => setLogs((prev) => [...prev.slice(-80), line]);
+  const appendLog = (line) => {
+    if (!isMountedRef.current) return;
+    setLogs((prev) => [...prev.slice(-80), line]);
+  };
 
   const onFileSelect = async (file) => {
+    if (!isMountedRef.current) return;
     setError('');
     if (!file) return;
 
@@ -51,6 +64,7 @@ export default function App() {
 
     try {
       const metadata = await getVideoMetadata(file);
+      if (!isMountedRef.current) return;
       setState((prev) => ({
         ...prev,
         file,
@@ -63,7 +77,7 @@ export default function App() {
       }));
       setLogs([]);
     } catch (err) {
-      setError(err.message);
+      if (isMountedRef.current) setError(err.message);
     }
   };
 
@@ -72,12 +86,13 @@ export default function App() {
       ffmpegRef.current = new FFmpeg();
       ffmpegRef.current.on('log', ({ message }) => appendLog(message));
       ffmpegRef.current.on('progress', ({ progress }) => {
+        if (!isMountedRef.current) return;
         setState((prev) => ({ ...prev, progress: Math.round(progress * 100) }));
       });
     }
 
     if (!isFfmpegLoadedRef.current) {
-      setState((prev) => ({ ...prev, status: 'loading' }));
+      if (isMountedRef.current) setState((prev) => ({ ...prev, status: 'loading' }));
       await ffmpegRef.current.load({
         coreURL: '/ffmpeg/ffmpeg-core.js',
         wasmURL: '/ffmpeg/ffmpeg-core.wasm',
@@ -106,13 +121,13 @@ export default function App() {
   const MIN_DURATION = 0.5;
 
   const onProcess = async () => {
-    if (!state.file) return;
+    if (!state.file || !isMountedRef.current) return;
     setError('');
     setLogs([]);
 
     try {
       await ensureFfmpegLoaded();
-      setState((prev) => ({ ...prev, status: 'processing', progress: 0 }));
+      if (isMountedRef.current) setState((prev) => ({ ...prev, status: 'processing', progress: 0 }));
 
       const ffmpeg = ffmpegRef.current;
       await ffmpeg.writeFile('input.mp4', await fetchFile(state.file));
@@ -150,6 +165,11 @@ export default function App() {
       const outputBlob = new Blob([data.buffer], { type: 'video/mp4' });
       const outputUrl = URL.createObjectURL(outputBlob);
 
+      if (!isMountedRef.current) {
+        URL.revokeObjectURL(outputUrl);
+        return;
+      }
+
       setState((prev) => ({
         ...prev,
         outputUrl,
@@ -157,8 +177,10 @@ export default function App() {
         progress: 100,
       }));
     } catch (err) {
-      setError(err.message || 'Processing failed.');
-      setState((prev) => ({ ...prev, status: 'error' }));
+      if (isMountedRef.current) {
+        setError(err.message || 'Processing failed.');
+        setState((prev) => ({ ...prev, status: 'error' }));
+      }
     }
   };
 
