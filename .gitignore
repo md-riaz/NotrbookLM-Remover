@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .DS_Store
+
+public/ffmpeg/ffmpeg-core.js
+public/ffmpeg/ffmpeg-core.wasm

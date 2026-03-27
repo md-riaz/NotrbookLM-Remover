@@ -16,7 +16,8 @@ import {
 } from "./lib/watermark";
 
 const MIN_DURATION = 0.5;
-const FFMPEG_CDN_BASE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
+const FFMPEG_CDN_BASE =
+  "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
 
 function getErrorDebugDetails(error) {
   if (!error) return ["Unknown processing error."];
@@ -81,10 +82,7 @@ export default function App() {
   };
 
   const getFfmpegAssetUrls = () => {
-    const localBasePath = `${import.meta.env.BASE_URL}/ffmpeg/`.replace(
-      /\/\/+/g,
-      "/",
-    );
+    const localBasePath = `${import.meta.env.BASE_URL}ffmpeg/`;
 
     return {
       local: {
