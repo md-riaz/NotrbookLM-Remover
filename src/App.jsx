@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
+import { fetchFile, toBlobURL } from "@ffmpeg/util";
 import Controls from "./components/Controls";
 import ProgressBar from "./components/ProgressBar";
 import UploadBox from "./components/UploadBox";
@@ -98,6 +98,11 @@ export default function App() {
     };
   };
 
+  const getBlobifiedCdnAssetUrls = async (cdnAssetUrls) => ({
+    coreURL: await toBlobURL(cdnAssetUrls.coreURL, "text/javascript"),
+    wasmURL: await toBlobURL(cdnAssetUrls.wasmURL, "application/wasm"),
+  });
+
   const onFileSelect = async (file) => {
     if (!isMountedRef.current) return;
     setError("");
@@ -164,19 +169,29 @@ export default function App() {
         await ffmpegRef.current.load(assetUrls.local);
         appendDebugLog("ffmpeg-load", "completed (local assets)");
       } catch (localLoadError) {
+        getErrorDebugDetails(localLoadError).forEach((detail) =>
+          appendDebugLog("ffmpeg-local-load-error", detail),
+        );
         appendDebugLog(
           "ffmpeg-load",
           `local load failed, switching to CDN assets core=${assetUrls.cdn.coreURL} wasm=${assetUrls.cdn.wasmURL}`,
         );
-        await ffmpegRef.current.load(assetUrls.cdn);
-        appendDebugLog("ffmpeg-load", "completed (CDN fallback)");
-        appendDebugLog(
-          "ffmpeg-load-warning",
-          "Using CDN fallback. Add public/ffmpeg assets for offline/local reliability.",
-        );
-        getErrorDebugDetails(localLoadError).forEach((detail) =>
-          appendDebugLog("ffmpeg-local-load-error", detail),
-        );
+        try {
+          const blobifiedCdnAssetUrls = await getBlobifiedCdnAssetUrls(
+            assetUrls.cdn,
+          );
+          await ffmpegRef.current.load(blobifiedCdnAssetUrls);
+          appendDebugLog("ffmpeg-load", "completed (CDN fallback)");
+          appendDebugLog(
+            "ffmpeg-load-warning",
+            "Using CDN fallback. Add public/ffmpeg assets for offline/local reliability.",
+          );
+        } catch (cdnLoadError) {
+          getErrorDebugDetails(cdnLoadError).forEach((detail) =>
+            appendDebugLog("ffmpeg-cdn-load-error", detail),
+          );
+          throw cdnLoadError;
+        }
       }
 
       isFfmpegLoadedRef.current = true;
