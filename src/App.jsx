@@ -81,14 +81,15 @@ export default function App() {
   };
 
   const getFfmpegAssetUrls = () => {
-    const normalizedBase = import.meta.env.BASE_URL.endsWith("/")
-      ? import.meta.env.BASE_URL
-      : `${import.meta.env.BASE_URL}/`;
+    const localBasePath = `${import.meta.env.BASE_URL}/ffmpeg/`.replace(
+      /\/\/+/g,
+      "/",
+    );
 
     return {
       local: {
-        coreURL: `${normalizedBase}ffmpeg/ffmpeg-core.js`,
-        wasmURL: `${normalizedBase}ffmpeg/ffmpeg-core.wasm`,
+        coreURL: `${localBasePath}ffmpeg-core.js`,
+        wasmURL: `${localBasePath}ffmpeg-core.wasm`,
       },
       cdn: {
         coreURL: `${FFMPEG_CDN_BASE}/ffmpeg-core.js`,
@@ -165,7 +166,7 @@ export default function App() {
       } catch (localLoadError) {
         appendDebugLog(
           "ffmpeg-load",
-          `local load failed, switching to CDN assets (${assetUrls.cdn.coreURL})`,
+          `local load failed, switching to CDN assets core=${assetUrls.cdn.coreURL} wasm=${assetUrls.cdn.wasmURL}`,
         );
         await ffmpegRef.current.load(assetUrls.cdn);
         appendDebugLog("ffmpeg-load", "completed (CDN fallback)");
