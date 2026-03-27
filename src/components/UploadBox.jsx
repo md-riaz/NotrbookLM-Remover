@@ -8,13 +8,9 @@ export default function UploadBox({ fileLabel, onFileSelect }) {
         onFileSelect(e.dataTransfer.files?.[0]);
       }}
     >
-      <input
-        type="file"
-        accept=".mp4,video/mp4"
-        onChange={(e) => onFileSelect(e.target.files?.[0])}
-        hidden
-      />
-      <span>{fileLabel}</span>
+      <input type="file" accept=".mp4,video/mp4" onChange={(e) => onFileSelect(e.target.files?.[0])} hidden />
+      <span className="upload-title">Drop an MP4 file or click to choose</span>
+      <small>{fileLabel}</small>
     </label>
   );
 }

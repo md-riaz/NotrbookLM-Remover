@@ -3,10 +3,11 @@ export const MAX_FILE_SIZE = 100 * MB;
 export const BASE_WIDTH = 1280;
 export const BASE_HEIGHT = 720;
 export const BASE_DELOGO = { x: 1104, y: 656, w: 133, h: 22 };
+export const PROCESS_CHUNK_SECONDS = 12;
 
 export const PRESETS = {
-  speed: ['-r', '15', '-crf', '28', '-preset', 'ultrafast'],
-  balanced: ['-r', '30', '-crf', '23', '-preset', 'veryfast'],
+  speed: ['-crf', '28', '-preset', 'ultrafast'],
+  balanced: ['-crf', '23', '-preset', 'veryfast'],
   quality: ['-crf', '18', '-preset', 'superfast'],
 };
 
@@ -15,6 +16,7 @@ export const initialState = {
   duration: 0,
   width: BASE_WIDTH,
   height: BASE_HEIGHT,
+  fps: 30,
   progress: 0,
   status: 'idle',
   outputUrl: '',
@@ -44,6 +46,13 @@ export function getScaledDelogo(width, height) {
   );
 }
 
+export function getOutputFps(fps) {
+  if (!Number.isFinite(fps) || fps <= 0) {
+    return 30;
+  }
+  return Math.min(fps, 60);
+}
+
 export async function getVideoMetadata(file) {
   const url = URL.createObjectURL(file);
   try {
@@ -52,11 +61,20 @@ export async function getVideoMetadata(file) {
       video.preload = 'metadata';
       video.src = url;
       video.onloadedmetadata = () => {
-        resolve({
-          duration: Number(video.duration) || 0,
-          width: video.videoWidth || BASE_WIDTH,
-          height: video.videoHeight || BASE_HEIGHT,
-        });
+        const duration = Number(video.duration) || 0;
+        const width = video.videoWidth || BASE_WIDTH;
+        const height = video.videoHeight || BASE_HEIGHT;
+        let fps = 30;
+
+        if (typeof video.getVideoPlaybackQuality === 'function') {
+          const quality = video.getVideoPlaybackQuality();
+          const frameCount = quality?.totalVideoFrames || 0;
+          if (duration > 0 && frameCount > 0) {
+            fps = frameCount / duration;
+          }
+        }
+
+        resolve({ duration, width, height, fps });
       };
       video.onerror = () => reject(new Error('Could not read video metadata.'));
     });
@@ -66,7 +84,6 @@ export async function getVideoMetadata(file) {
     URL.revokeObjectURL(url);
   }
 }
-
 
 const SEEK_EPSILON = 0.001;
 const SEEK_TIMEOUT_MS = 1500;
