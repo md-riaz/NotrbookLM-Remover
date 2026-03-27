@@ -1,0 +1,109 @@
+:root {
+  font-family: Inter, system-ui, Arial, sans-serif;
+  color: #f5f7ff;
+  background: #111827;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.container {
+  width: min(980px, 92vw);
+  margin: 2rem auto;
+  display: grid;
+  gap: 1rem;
+}
+
+.subtext {
+  margin-top: -0.4rem;
+  color: #c8d0df;
+}
+
+.upload-box {
+  border: 1px dashed #6b7280;
+  border-radius: 12px;
+  padding: 2rem;
+  text-align: center;
+  cursor: pointer;
+  background: #1f2937;
+}
+
+.controls {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.check {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+button,
+select,
+.download-link {
+  width: fit-content;
+  padding: 0.65rem 0.9rem;
+  border-radius: 8px;
+  border: 0;
+  text-decoration: none;
+}
+
+button,
+.download-link {
+  background: #6366f1;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+button[disabled] {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.progress-track {
+  width: 100%;
+  background: #374151;
+  border-radius: 999px;
+  height: 10px;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: #10b981;
+}
+
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+}
+
+video {
+  width: 100%;
+  border-radius: 10px;
+  background: #000;
+}
+
+.logs pre {
+  margin: 0;
+  background: #0b1020;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  padding: 0.8rem;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.error {
+  color: #fca5a5;
+}
