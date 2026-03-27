@@ -51,19 +51,16 @@ export default function App() {
 
     try {
       const metadata = await getVideoMetadata(file);
-      setState((prev) => {
-        if (prev.outputUrl) URL.revokeObjectURL(prev.outputUrl);
-        return {
-          ...prev,
-          file,
-          duration: metadata.duration,
-          width: metadata.width,
-          height: metadata.height,
-          progress: 0,
-          status: 'idle',
-          outputUrl: '',
-        };
-      });
+      setState((prev) => ({
+        ...prev,
+        file,
+        duration: metadata.duration,
+        width: metadata.width,
+        height: metadata.height,
+        progress: 0,
+        status: 'idle',
+        outputUrl: '',
+      }));
       setLogs([]);
     } catch (err) {
       setError(err.message);
@@ -106,6 +103,8 @@ export default function App() {
     [state.outputUrl],
   );
 
+  const MIN_DURATION = 0.5;
+
   const onProcess = async () => {
     if (!state.file) return;
     setError('');
@@ -119,6 +118,7 @@ export default function App() {
       await ffmpeg.writeFile('input.mp4', await fetchFile(state.file));
 
       const finalDuration = removeEnding ? Math.max(0, state.duration - 2.5) : state.duration;
+      const durationArgs = finalDuration >= MIN_DURATION ? ['-t', `${finalDuration}`] : [];
       const rect = getScaledDelogo(state.width, state.height);
       const defaultFilter = `delogo=x=${rect.x}:y=${rect.y}:w=${rect.w}:h=${rect.h}`;
       const delogoFilter = dynamicDetection
@@ -137,26 +137,25 @@ export default function App() {
         'stillimage',
         '-c:a',
         'copy',
-        '-t',
-        `${finalDuration}`,
+        ...durationArgs,
         'output.mp4',
       ];
 
+      if (removeEnding && finalDuration < MIN_DURATION) {
+        appendLog('Ending trim skipped because resulting duration is too short.');
+      }
       appendLog(`Running: ffmpeg ${args.join(' ')}`);
       await ffmpeg.exec(args);
       const data = await ffmpeg.readFile('output.mp4');
       const outputBlob = new Blob([data.buffer], { type: 'video/mp4' });
       const outputUrl = URL.createObjectURL(outputBlob);
 
-      setState((prev) => {
-        if (prev.outputUrl) URL.revokeObjectURL(prev.outputUrl);
-        return {
-          ...prev,
-          outputUrl,
-          status: 'done',
-          progress: 100,
-        };
-      });
+      setState((prev) => ({
+        ...prev,
+        outputUrl,
+        status: 'done',
+        progress: 100,
+      }));
     } catch (err) {
       setError(err.message || 'Processing failed.');
       setState((prev) => ({ ...prev, status: 'error' }));

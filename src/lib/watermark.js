@@ -67,6 +67,35 @@ export async function getVideoMetadata(file) {
   }
 }
 
+
+const SEEK_EPSILON = 0.001;
+const SEEK_TIMEOUT_MS = 1500;
+
+function waitForSeek(video, targetTime) {
+  if (Math.abs(video.currentTime - targetTime) < SEEK_EPSILON) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const handleSeeked = () => {
+      cleanup();
+      resolve();
+    };
+
+    const timer = window.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, SEEK_TIMEOUT_MS);
+
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      video.removeEventListener('seeked', handleSeeked);
+    };
+
+    video.addEventListener('seeked', handleSeeked);
+  });
+}
+
 export async function detectDynamicDelogoFilter(file, metadata) {
   const probeUrl = URL.createObjectURL(file);
   const video = document.createElement('video');
@@ -94,11 +123,9 @@ export async function detectDynamicDelogoFilter(file, metadata) {
 
   for (let i = 0; i < sampleCount; i += 1) {
     const t = (metadata.duration * i) / Math.max(1, sampleCount - 1);
-    video.currentTime = Math.min(Math.max(t, 0), Math.max(metadata.duration - 0.05, 0));
-
-    await new Promise((resolve) => {
-      video.onseeked = () => resolve();
-    });
+    const safeTime = Math.min(Math.max(t, 0), Math.max(metadata.duration - 0.05, 0));
+    video.currentTime = safeTime;
+    await waitForSeek(video, safeTime);
 
     ctx.drawImage(video, 0, 0, metadata.width, metadata.height);
     const data = ctx.getImageData(rect.x, rect.y, rect.w, rect.h).data;
