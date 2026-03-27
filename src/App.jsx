@@ -1,33 +1,36 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
-import Controls from "./components/Controls";
-import ProgressBar from "./components/ProgressBar";
-import UploadBox from "./components/UploadBox";
-import VideoPreview from "./components/VideoPreview";
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import Controls from './components/Controls';
+import ProgressBar from './components/ProgressBar';
+import UploadBox from './components/UploadBox';
+import VideoPreview from './components/VideoPreview';
+import { clearSegments, getSegmentBlob, hasAllSegments, storeSegmentBlob } from './lib/resumeStore';
 import {
   MB,
   MAX_FILE_SIZE,
   PRESETS,
-  detectDynamicDelogoFilter,
-  getScaledDelogo,
+  PROCESS_CHUNK_SECONDS,
+  buildDelogoFilter,
+  detectDynamicDelogoSegments,
+  getOutputFps,
   getVideoMetadata,
   initialState,
-} from "./lib/watermark";
+} from './lib/watermark';
 
 const MIN_DURATION = 0.5;
-const FFMPEG_CDN_BASE =
-  "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
+const FFMPEG_CDN_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
+const JOB_STORAGE_KEY = 'watermark-remover-job-v2';
 
 function getErrorDebugDetails(error) {
-  if (!error) return ["Unknown processing error."];
+  if (!error) return ['Unknown processing error.'];
 
   const details = [];
   if (error instanceof Error) {
     details.push(`name=${error.name}`);
-    details.push(`message=${error.message || "No error message available."}`);
+    details.push(`message=${error.message || 'No error message available.'}`);
     if (error.stack) {
-      const firstStackLines = error.stack.split("\n").slice(0, 4).join(" | ");
+      const firstStackLines = error.stack.split('\n').slice(0, 4).join(' | ');
       details.push(`stack=${firstStackLines}`);
     }
   } else {
@@ -37,48 +40,100 @@ function getErrorDebugDetails(error) {
   return details;
 }
 
+function loadSavedJob() {
+  try {
+    const raw = window.localStorage.getItem(JOB_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function saveJob(job) {
+  try {
+    window.localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(job));
+  } catch {
+    // best effort persistence
+  }
+}
+
+function clearSavedJob() {
+  try {
+    window.localStorage.removeItem(JOB_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function getConcatFileList(segmentCount) {
+  return Array.from({ length: segmentCount })
+    .map((_, index) => `file 'segment-${String(index).padStart(4, '0')}.mp4'`)
+    .join('\n');
+}
+
+function getJobId(file, config) {
+  return [
+    file.name,
+    file.size,
+    file.lastModified,
+    Math.round(config.duration * 100),
+    config.preset,
+    config.removeEnding,
+    config.dynamicDetection,
+  ].join(':');
+}
+
 export default function App() {
   const ffmpegRef = useRef(null);
   const isFfmpegLoadedRef = useRef(false);
   const isMountedRef = useRef(false);
   const [state, setState] = useState(initialState);
-  const [preset, setPreset] = useState("balanced");
+  const [preset, setPreset] = useState('balanced');
   const [removeEnding, setRemoveEnding] = useState(true);
   const [dynamicDetection, setDynamicDetection] = useState(false);
   const [logs, setLogs] = useState([]);
-  const [error, setError] = useState("");
-  const [inputPreviewUrl, setInputPreviewUrl] = useState("");
+  const [error, setError] = useState('');
+  const [inputPreviewUrl, setInputPreviewUrl] = useState('');
+  const [savedJob, setSavedJob] = useState(null);
 
   const hasInput = Boolean(state.file);
 
   useEffect(() => {
     isMountedRef.current = true;
+    const existingJob = loadSavedJob();
+    if (existingJob) {
+      setSavedJob(existingJob);
+      setPreset(existingJob.preset || 'balanced');
+      setRemoveEnding(Boolean(existingJob.removeEnding));
+      setDynamicDetection(Boolean(existingJob.dynamicDetection));
+    }
+
     return () => {
       isMountedRef.current = false;
     };
   }, []);
 
   const fileLabel = useMemo(() => {
-    if (!state.file) return "Drop an MP4 file here, or click to browse.";
+    if (!state.file) return 'Drop an MP4 file here, or click to browse.';
     return `${state.file.name} (${(state.file.size / MB).toFixed(2)} MB)`;
   }, [state.file]);
 
   const appendLog = (line) => {
     if (!isMountedRef.current) return;
-    setLogs((prev) => [...prev.slice(-120), line]);
+    setLogs((prev) => [...prev.slice(-180), line]);
   };
 
-  const appendDebugLog = (label, payload = "") => {
+  const appendDebugLog = (label, payload = '') => {
     const now = new Date().toISOString();
     const message = payload ? `${label}: ${payload}` : label;
     appendLog(`[debug ${now}] ${message}`);
   };
 
   const setPublicError = (message, debugDetails = []) => {
-    const fallback =
-      "Processing failed. Please review debug logs below and try again.";
+    const fallback = 'Processing failed. Please review debug logs below and try again.';
     setError(message || fallback);
-    debugDetails.forEach((detail) => appendDebugLog("error-detail", detail));
+    debugDetails.forEach((detail) => appendDebugLog('error-detail', detail));
   };
 
   const getFfmpegAssetUrls = () => {
@@ -97,49 +152,51 @@ export default function App() {
   };
 
   const getBlobifiedCdnAssetUrls = async (cdnAssetUrls) => ({
-    coreURL: await toBlobURL(cdnAssetUrls.coreURL, "text/javascript"),
-    wasmURL: await toBlobURL(cdnAssetUrls.wasmURL, "application/wasm"),
+    coreURL: await toBlobURL(cdnAssetUrls.coreURL, 'text/javascript'),
+    wasmURL: await toBlobURL(cdnAssetUrls.wasmURL, 'application/wasm'),
   });
 
   const onFileSelect = async (file) => {
     if (!isMountedRef.current) return;
-    setError("");
+    setError('');
     if (!file) return;
 
-    if (!file.name.toLowerCase().endsWith(".mp4")) {
-      setPublicError("Only MP4 files are supported.");
+    if (!file.name.toLowerCase().endsWith('.mp4')) {
+      setPublicError('Only MP4 files are supported.');
       return;
     }
 
     if (file.size > MAX_FILE_SIZE) {
-      setPublicError("Max file size is 100 MB.");
+      setPublicError('Max file size is 100 MB.');
       return;
     }
 
     try {
       const metadata = await getVideoMetadata(file);
       if (!isMountedRef.current) return;
+
+      const outputFps = getOutputFps(metadata.fps);
       setState((prev) => ({
         ...prev,
         file,
         duration: metadata.duration,
         width: metadata.width,
         height: metadata.height,
+        inputFps: metadata.fps,
+        outputFps,
         progress: 0,
-        status: "idle",
-        outputUrl: "",
+        status: 'idle',
+        outputUrl: '',
       }));
+
       setLogs([]);
       appendDebugLog(
-        "input-metadata",
-        `duration=${metadata.duration.toFixed(2)} width=${metadata.width} height=${metadata.height}`,
+        'input-metadata',
+        `duration=${metadata.duration.toFixed(2)} width=${metadata.width} height=${metadata.height} inputFps=${metadata.fps.toFixed(2)} outputFps=${outputFps.toFixed(2)}`,
       );
     } catch (err) {
       if (isMountedRef.current) {
-        setPublicError(
-          "Could not read video metadata. Please retry with another MP4 file.",
-          getErrorDebugDetails(err),
-        );
+        setPublicError('Could not read video metadata. Please retry with another MP4 file.', getErrorDebugDetails(err));
       }
     }
   };
@@ -147,49 +204,24 @@ export default function App() {
   const ensureFfmpegLoaded = async () => {
     if (!ffmpegRef.current) {
       ffmpegRef.current = new FFmpeg();
-      ffmpegRef.current.on("log", ({ message }) => appendLog(message));
-      ffmpegRef.current.on("progress", ({ progress }) => {
-        if (!isMountedRef.current) return;
-        setState((prev) => ({ ...prev, progress: Math.round(progress * 100) }));
-      });
+      ffmpegRef.current.on('log', ({ message }) => appendLog(message));
     }
 
     if (!isFfmpegLoadedRef.current) {
-      if (isMountedRef.current)
-        setState((prev) => ({ ...prev, status: "loading" }));
+      if (isMountedRef.current) setState((prev) => ({ ...prev, status: 'loading' }));
       const assetUrls = getFfmpegAssetUrls();
 
       try {
-        appendDebugLog(
-          "ffmpeg-load",
-          `starting local core load from ${assetUrls.local.coreURL} and ${assetUrls.local.wasmURL}`,
-        );
+        appendDebugLog('ffmpeg-load', `starting local core load from ${assetUrls.local.coreURL} and ${assetUrls.local.wasmURL}`);
         await ffmpegRef.current.load(assetUrls.local);
-        appendDebugLog("ffmpeg-load", "completed (local assets)");
+        appendDebugLog('ffmpeg-load', 'completed (local assets)');
       } catch (localLoadError) {
-        getErrorDebugDetails(localLoadError).forEach((detail) =>
-          appendDebugLog("ffmpeg-local-load-error", detail),
-        );
-        appendDebugLog(
-          "ffmpeg-load",
-          `local load failed, switching to CDN assets core=${assetUrls.cdn.coreURL} wasm=${assetUrls.cdn.wasmURL}`,
-        );
-        try {
-          const blobifiedCdnAssetUrls = await getBlobifiedCdnAssetUrls(
-            assetUrls.cdn,
-          );
-          await ffmpegRef.current.load(blobifiedCdnAssetUrls);
-          appendDebugLog("ffmpeg-load", "completed (CDN fallback)");
-          appendDebugLog(
-            "ffmpeg-load-warning",
-            "Using CDN fallback. Add public/ffmpeg assets for offline/local reliability.",
-          );
-        } catch (cdnLoadError) {
-          getErrorDebugDetails(cdnLoadError).forEach((detail) =>
-            appendDebugLog("ffmpeg-cdn-load-error", detail),
-          );
-          throw cdnLoadError;
-        }
+        getErrorDebugDetails(localLoadError).forEach((detail) => appendDebugLog('ffmpeg-local-load-error', detail));
+        appendDebugLog('ffmpeg-load', `local load failed, switching to CDN assets core=${assetUrls.cdn.coreURL} wasm=${assetUrls.cdn.wasmURL}`);
+
+        const blobifiedCdnAssetUrls = await getBlobifiedCdnAssetUrls(assetUrls.cdn);
+        await ffmpegRef.current.load(blobifiedCdnAssetUrls);
+        appendDebugLog('ffmpeg-load', 'completed (CDN fallback)');
       }
 
       isFfmpegLoadedRef.current = true;
@@ -198,7 +230,7 @@ export default function App() {
 
   useEffect(() => {
     if (!state.file) {
-      setInputPreviewUrl("");
+      setInputPreviewUrl('');
       return;
     }
     const nextUrl = URL.createObjectURL(state.file);
@@ -213,64 +245,142 @@ export default function App() {
     [state.outputUrl],
   );
 
+  const onClearSavedJob = async () => {
+    if (savedJob?.jobId) {
+      await clearSegments(savedJob.jobId);
+    }
+    clearSavedJob();
+    setSavedJob(null);
+    appendLog('Saved resume data was cleared.');
+  };
+
   const onProcess = async () => {
     if (!state.file || !isMountedRef.current) return;
-    setError("");
+    setError('');
     setLogs([]);
 
     try {
       await ensureFfmpegLoaded();
-      if (isMountedRef.current)
-        setState((prev) => ({ ...prev, status: "processing", progress: 0 }));
+      setState((prev) => ({ ...prev, status: 'processing', progress: 0 }));
 
       const ffmpeg = ffmpegRef.current;
-      appendDebugLog(
-        "input-file",
-        `name=${state.file.name} bytes=${state.file.size}`,
-      );
-      await ffmpeg.writeFile("input.mp4", await fetchFile(state.file));
+      await ffmpeg.writeFile('input.mp4', await fetchFile(state.file));
 
-      const finalDuration = removeEnding
-        ? Math.max(0, state.duration - 2.5)
-        : state.duration;
-      const durationArgs =
-        finalDuration >= MIN_DURATION ? ["-t", `${finalDuration}`] : [];
-      const rect = getScaledDelogo(state.width, state.height);
-      const defaultFilter = `delogo=x=${rect.x}:y=${rect.y}:w=${rect.w}:h=${rect.h}`;
-      const delogoFilter = dynamicDetection
-        ? await detectDynamicDelogoFilter(state.file, state)
-        : defaultFilter;
+      const trimCandidateDuration = state.duration - 2.5;
+      const shouldTrimEnding = removeEnding && trimCandidateDuration >= MIN_DURATION;
+      const finalDuration = shouldTrimEnding ? trimCandidateDuration : state.duration;
+      const segmentCount = Math.max(1, Math.ceil(finalDuration / PROCESS_CHUNK_SECONDS));
+      const outputFpsArgs = state.inputFps > 60 ? ['-r', '60'] : [];
 
-      const args = [
-        "-i",
-        "input.mp4",
-        "-vf",
-        delogoFilter,
-        ...PRESETS[preset],
-        "-c:v",
-        "libx264",
-        "-tune",
-        "stillimage",
-        "-c:a",
-        "copy",
-        ...durationArgs,
-        "output.mp4",
-      ];
+      const jobId = getJobId(state.file, {
+        duration: finalDuration,
+        preset,
+        removeEnding,
+        dynamicDetection,
+      });
 
-      if (removeEnding && finalDuration < MIN_DURATION) {
-        appendLog(
-          "Ending trim skipped because resulting duration is too short.",
-        );
+      const existingJob = loadSavedJob();
+      const canResumeFromCheckpoint =
+        existingJob &&
+        existingJob.jobId === jobId &&
+        existingJob.fileName === state.file.name &&
+        existingJob.fileSize === state.file.size &&
+        existingJob.segmentCount === segmentCount;
+
+      const previousComplete = canResumeFromCheckpoint ? existingJob.completedSegments || 0 : 0;
+      let startSegment = 0;
+
+      if (canResumeFromCheckpoint && previousComplete > 0) {
+        const hasSegments = await hasAllSegments(jobId, previousComplete);
+        if (hasSegments) {
+          startSegment = previousComplete;
+          appendLog(`Restored ${previousComplete} cached segment(s) from previous session.`);
+          for (let index = 0; index < previousComplete; index += 1) {
+            // eslint-disable-next-line no-await-in-loop
+            const blob = await getSegmentBlob(jobId, index);
+            if (blob) {
+              const data = new Uint8Array(await blob.arrayBuffer());
+              // eslint-disable-next-line no-await-in-loop
+              await ffmpeg.writeFile(`segment-${String(index).padStart(4, '0')}.mp4`, data);
+            }
+          }
+        } else {
+          appendLog('Resume cache is incomplete; starting from segment 1.');
+          await clearSegments(jobId);
+        }
+      } else {
+        await clearSegments(jobId);
       }
 
+      if (removeEnding && !shouldTrimEnding) {
+        appendLog('Ending trim skipped because resulting duration would be too short.');
+      }
+
+      const dynamicSegments = dynamicDetection ? await detectDynamicDelogoSegments(state.file, state) : null;
       appendDebugLog(
-        "pipeline",
-        `preset=${preset} dynamicDetection=${dynamicDetection} removeEnding=${removeEnding}`,
+        'pipeline',
+        `preset=${preset} dynamicDetection=${dynamicDetection} removeEnding=${removeEnding} segments=${segmentCount} startSegment=${startSegment}`,
       );
-      appendLog(`Running: ffmpeg ${args.join(" ")}`);
-      await ffmpeg.exec(args);
-      const data = await ffmpeg.readFile("output.mp4");
-      const outputBlob = new Blob([data.buffer], { type: "video/mp4" });
+
+      for (let index = startSegment; index < segmentCount; index += 1) {
+        const startTime = index * PROCESS_CHUNK_SECONDS;
+        const segmentDuration = Math.min(PROCESS_CHUNK_SECONDS, Math.max(0, finalDuration - startTime));
+        const segmentName = `segment-${String(index).padStart(4, '0')}.mp4`;
+        const segmentEnd = startTime + Math.max(segmentDuration, MIN_DURATION);
+        const segmentFilter = buildDelogoFilter(state.width, state.height, dynamicSegments, startTime, segmentEnd);
+
+        const args = [
+          '-ss',
+          `${startTime}`,
+          '-i',
+          'input.mp4',
+          '-vf',
+          segmentFilter,
+          ...PRESETS[preset],
+          ...outputFpsArgs,
+          '-c:v',
+          'libx264',
+          '-c:a',
+          'copy',
+          '-t',
+          `${Math.max(segmentDuration, MIN_DURATION)}`,
+          segmentName,
+        ];
+
+        appendLog(`Running segment ${index + 1}/${segmentCount}: ffmpeg ${args.join(' ')}`);
+        await ffmpeg.exec(args);
+
+        const segmentBytes = await ffmpeg.readFile(segmentName);
+        const segmentBlob = new Blob([segmentBytes.buffer], { type: 'video/mp4' });
+        await storeSegmentBlob(jobId, index, segmentBlob);
+
+        const completedSegments = index + 1;
+        const progress = Math.round((completedSegments / Math.max(1, segmentCount)) * 95);
+        setState((prev) => ({ ...prev, progress }));
+
+        const persistedJob = {
+          jobId,
+          fileName: state.file.name,
+          fileSize: state.file.size,
+          updatedAt: Date.now(),
+          preset,
+          removeEnding,
+          dynamicDetection,
+          segmentCount,
+          completedSegments,
+          status: 'processing',
+        };
+        saveJob(persistedJob);
+        setSavedJob(persistedJob);
+      }
+
+      setState((prev) => ({ ...prev, progress: 98 }));
+      const concatFile = getConcatFileList(segmentCount);
+      await ffmpeg.writeFile('concat-list.txt', concatFile);
+      await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'concat-list.txt', '-c', 'copy', 'output.mp4']);
+
+      const data = await ffmpeg.readFile('output.mp4');
+      const outputBlob = new Blob([data.buffer], { type: 'video/mp4' });
       const outputUrl = URL.createObjectURL(outputBlob);
 
       if (!isMountedRef.current) {
@@ -278,18 +388,33 @@ export default function App() {
         return;
       }
 
-      appendDebugLog("output-file", `bytes=${outputBlob.size}`);
+      appendDebugLog('output-file', `bytes=${outputBlob.size}`);
       setState((prev) => ({
         ...prev,
         outputUrl,
-        status: "done",
+        status: 'done',
         progress: 100,
       }));
+
+      const doneJob = {
+        jobId,
+        fileName: state.file.name,
+        fileSize: state.file.size,
+        updatedAt: Date.now(),
+        preset,
+        removeEnding,
+        dynamicDetection,
+        segmentCount,
+        completedSegments: segmentCount,
+        status: 'done',
+      };
+      saveJob(doneJob);
+      setSavedJob(doneJob);
     } catch (err) {
       if (isMountedRef.current) {
-        setState((prev) => ({ ...prev, status: "error" }));
+        setState((prev) => ({ ...prev, status: 'error' }));
         setPublicError(
-          "We could not process this video. Please check the FFmpeg logs and debug details below.",
+          'We could not process this video. Please check the FFmpeg logs and debug details below.',
           getErrorDebugDetails(err),
         );
       }
@@ -297,42 +422,58 @@ export default function App() {
   };
 
   return (
-    <main className="container">
-      <h1>NotebookLM Video Watermark Remover</h1>
-      <p className="subtext">
-        Client-side MP4 watermark removal via FFmpeg WASM + delogo.
-      </p>
+    <main className="app-shell">
+      <header className="hero">
+        <p className="eyebrow">NotebookLM Utility</p>
+        <h1>Video Watermark Remover</h1>
+        <p className="subtext">
+          Fast, client-side MP4 processing with resumable checkpoints saved in local storage + IndexedDB.
+        </p>
+      </header>
 
-      <UploadBox fileLabel={fileLabel} onFileSelect={onFileSelect} />
-      <Controls
-        preset={preset}
-        setPreset={setPreset}
-        removeEnding={removeEnding}
-        setRemoveEnding={setRemoveEnding}
-        dynamicDetection={dynamicDetection}
-        setDynamicDetection={setDynamicDetection}
-      />
+      {savedJob && (
+        <section className="resume-banner">
+          <p>
+            Saved session found for <strong>{savedJob.fileName}</strong>. Last update:{' '}
+            {new Date(savedJob.updatedAt).toLocaleString()}.
+          </p>
+          <div className="banner-actions">
+            <button type="button" onClick={onClearSavedJob} className="secondary-btn">
+              Clear saved session
+            </button>
+          </div>
+        </section>
+      )}
 
-      <button
-        type="button"
-        onClick={onProcess}
-        disabled={!hasInput || state.status === "processing"}
-      >
-        {state.status === "processing" ? "Processing…" : "Process Video"}
-      </button>
+      <section className="card">
+        <UploadBox fileLabel={fileLabel} onFileSelect={onFileSelect} />
+        <Controls
+          preset={preset}
+          setPreset={setPreset}
+          removeEnding={removeEnding}
+          setRemoveEnding={setRemoveEnding}
+          dynamicDetection={dynamicDetection}
+          setDynamicDetection={setDynamicDetection}
+        />
 
-      <ProgressBar progress={state.progress} status={state.status} />
+        <div className="cta-row">
+          <button type="button" onClick={onProcess} disabled={!hasInput || state.status === 'processing'}>
+            {state.status === 'processing' ? 'Processing…' : 'Process Video'}
+          </button>
+          <small>
+            Input FPS: {state.inputFps.toFixed(2)} → Output FPS: {state.outputFps.toFixed(2)} (max 60, never upscaled)
+          </small>
+        </div>
 
-      {error && <p className="error">{error}</p>}
+        <ProgressBar progress={state.progress} status={state.status} />
+        {error && <p className="error">{error}</p>}
+      </section>
 
-      <VideoPreview
-        inputPreviewUrl={inputPreviewUrl}
-        outputUrl={state.outputUrl}
-      />
+      <VideoPreview inputPreviewUrl={inputPreviewUrl} outputUrl={state.outputUrl} />
 
-      <section className="logs">
+      <section className="logs card">
         <h2>FFmpeg Logs</h2>
-        <pre>{logs.join("\n")}</pre>
+        <pre>{logs.join('\n')}</pre>
       </section>
     </main>
   );
