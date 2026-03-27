@@ -8,7 +8,7 @@ export const PROCESS_CHUNK_SECONDS = 12;
 export const PRESETS = {
   speed: ['-crf', '28', '-preset', 'ultrafast'],
   balanced: ['-crf', '23', '-preset', 'veryfast'],
-  quality: ['-crf', '18', '-preset', 'superfast'],
+  quality: ['-crf', '18', '-preset', 'slower'],
 };
 
 export const initialState = {
@@ -93,15 +93,7 @@ export async function getVideoMetadata(file) {
         const duration = Number(video.duration) || 0;
         const width = video.videoWidth || BASE_WIDTH;
         const height = video.videoHeight || BASE_HEIGHT;
-        let fps = 30;
-
-        if (typeof video.getVideoPlaybackQuality === 'function') {
-          const quality = video.getVideoPlaybackQuality();
-          const frameCount = quality?.totalVideoFrames || 0;
-          if (duration > 0 && frameCount > 0) {
-            fps = frameCount / duration;
-          }
-        }
+        const fps = 30;
 
         resolve({ duration, width, height, fps });
       };

@@ -20,7 +20,7 @@ React + FFmpeg WASM implementation of the NotebookLM watermark remover flow.
 
 - **Speed**: `-crf 28 -preset ultrafast`
 - **Balanced**: `-crf 23 -preset veryfast`
-- **Quality**: `-crf 18 -preset superfast`
+- **Quality**: `-crf 18 -preset slower`
 
 ## Run
 

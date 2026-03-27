@@ -266,7 +266,9 @@ export default function App() {
       const ffmpeg = ffmpegRef.current;
       await ffmpeg.writeFile('input.mp4', await fetchFile(state.file));
 
-      const finalDuration = removeEnding ? Math.max(0, state.duration - 2.5) : state.duration;
+      const trimCandidateDuration = state.duration - 2.5;
+      const shouldTrimEnding = removeEnding && trimCandidateDuration >= MIN_DURATION;
+      const finalDuration = shouldTrimEnding ? trimCandidateDuration : state.duration;
       const segmentCount = Math.max(1, Math.ceil(finalDuration / PROCESS_CHUNK_SECONDS));
       const outputFpsArgs = state.inputFps > 60 ? ['-r', '60'] : [];
 
@@ -310,8 +312,8 @@ export default function App() {
         await clearSegments(jobId);
       }
 
-      if (removeEnding && finalDuration < MIN_DURATION) {
-        appendLog('Ending trim skipped because resulting duration is too short.');
+      if (removeEnding && !shouldTrimEnding) {
+        appendLog('Ending trim skipped because resulting duration would be too short.');
       }
 
       const dynamicSegments = dynamicDetection ? await detectDynamicDelogoSegments(state.file, state) : null;
