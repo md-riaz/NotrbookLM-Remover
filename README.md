@@ -3,9 +3,7 @@
 React + FFmpeg WASM implementation of the NotebookLM watermark remover flow:
 
 - MP4-only upload with drag/drop and 100MB validation
-- FFmpeg load with:
-  - `/ffmpeg/ffmpeg-core.js`
-  - `/ffmpeg/ffmpeg-core.wasm`
+- FFmpeg load with local assets (from `public/ffmpeg`) and automatic CDN fallback
 - Delogo pipeline with default rectangle: `x=1104:y=656:w=133:h=22` (scaled for non-1280x720)
 - Optional dynamic detection via `<video>` + `<canvas>` variance sampling
 - Optional ending trim (`duration - 2.5`)
@@ -27,3 +25,5 @@ npm run dev
 >
 > - `public/ffmpeg/ffmpeg-core.js`
 > - `public/ffmpeg/ffmpeg-core.wasm`
+>
+> If local assets are missing, the app falls back to jsDelivr (`@ffmpeg/core@0.12.10`).

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile } from "@ffmpeg/util";
+import { fetchFile, toBlobURL } from "@ffmpeg/util";
 import Controls from "./components/Controls";
 import ProgressBar from "./components/ProgressBar";
 import UploadBox from "./components/UploadBox";
@@ -16,6 +16,7 @@ import {
 } from "./lib/watermark";
 
 const MIN_DURATION = 0.5;
+const FFMPEG_CDN_BASE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
 
 function getErrorDebugDetails(error) {
   if (!error) return ["Unknown processing error."];
@@ -79,6 +80,29 @@ export default function App() {
     debugDetails.forEach((detail) => appendDebugLog("error-detail", detail));
   };
 
+  const getFfmpegAssetUrls = () => {
+    const localBasePath = `${import.meta.env.BASE_URL}/ffmpeg/`.replace(
+      /\/\/+/g,
+      "/",
+    );
+
+    return {
+      local: {
+        coreURL: `${localBasePath}ffmpeg-core.js`,
+        wasmURL: `${localBasePath}ffmpeg-core.wasm`,
+      },
+      cdn: {
+        coreURL: `${FFMPEG_CDN_BASE}/ffmpeg-core.js`,
+        wasmURL: `${FFMPEG_CDN_BASE}/ffmpeg-core.wasm`,
+      },
+    };
+  };
+
+  const getBlobifiedCdnAssetUrls = async (cdnAssetUrls) => ({
+    coreURL: await toBlobURL(cdnAssetUrls.coreURL, "text/javascript"),
+    wasmURL: await toBlobURL(cdnAssetUrls.wasmURL, "application/wasm"),
+  });
+
   const onFileSelect = async (file) => {
     if (!isMountedRef.current) return;
     setError("");
@@ -135,16 +159,42 @@ export default function App() {
     if (!isFfmpegLoadedRef.current) {
       if (isMountedRef.current)
         setState((prev) => ({ ...prev, status: "loading" }));
-      appendDebugLog(
-        "ffmpeg-load",
-        "starting core load from /ffmpeg/ffmpeg-core.js and /ffmpeg/ffmpeg-core.wasm",
-      );
-      await ffmpegRef.current.load({
-        coreURL: "/ffmpeg/ffmpeg-core.js",
-        wasmURL: "/ffmpeg/ffmpeg-core.wasm",
-      });
+      const assetUrls = getFfmpegAssetUrls();
+
+      try {
+        appendDebugLog(
+          "ffmpeg-load",
+          `starting local core load from ${assetUrls.local.coreURL} and ${assetUrls.local.wasmURL}`,
+        );
+        await ffmpegRef.current.load(assetUrls.local);
+        appendDebugLog("ffmpeg-load", "completed (local assets)");
+      } catch (localLoadError) {
+        getErrorDebugDetails(localLoadError).forEach((detail) =>
+          appendDebugLog("ffmpeg-local-load-error", detail),
+        );
+        appendDebugLog(
+          "ffmpeg-load",
+          `local load failed, switching to CDN assets core=${assetUrls.cdn.coreURL} wasm=${assetUrls.cdn.wasmURL}`,
+        );
+        try {
+          const blobifiedCdnAssetUrls = await getBlobifiedCdnAssetUrls(
+            assetUrls.cdn,
+          );
+          await ffmpegRef.current.load(blobifiedCdnAssetUrls);
+          appendDebugLog("ffmpeg-load", "completed (CDN fallback)");
+          appendDebugLog(
+            "ffmpeg-load-warning",
+            "Using CDN fallback. Add public/ffmpeg assets for offline/local reliability.",
+          );
+        } catch (cdnLoadError) {
+          getErrorDebugDetails(cdnLoadError).forEach((detail) =>
+            appendDebugLog("ffmpeg-cdn-load-error", detail),
+          );
+          throw cdnLoadError;
+        }
+      }
+
       isFfmpegLoadedRef.current = true;
-      appendDebugLog("ffmpeg-load", "completed");
     }
   };
 
