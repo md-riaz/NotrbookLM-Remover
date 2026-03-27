@@ -16,7 +16,8 @@ export const initialState = {
   duration: 0,
   width: BASE_WIDTH,
   height: BASE_HEIGHT,
-  fps: 30,
+  inputFps: 30,
+  outputFps: 30,
   progress: 0,
   status: 'idle',
   outputUrl: '',
@@ -51,6 +52,34 @@ export function getOutputFps(fps) {
     return 30;
   }
   return Math.min(fps, 60);
+}
+
+export function buildDelogoFilter(width, height, segments = null, windowStart = 0, windowEnd = Number.POSITIVE_INFINITY) {
+  const rect = getScaledDelogo(width, height);
+  const base = `delogo=x=${rect.x}:y=${rect.y}:w=${rect.w}:h=${rect.h}`;
+
+  if (!segments || !segments.length) {
+    return base;
+  }
+
+  const normalized = segments
+    .map(([startTime, endTime]) => {
+      const start = Math.max(startTime, windowStart) - windowStart;
+      const end = Math.min(endTime, windowEnd) - windowStart;
+      return [start, end];
+    })
+    .filter(([start, end]) => end - start >= 0.05);
+
+  if (!normalized.length) {
+    return base;
+  }
+
+  return normalized
+    .map(
+      ([startTime, endTime]) =>
+        `${base}:enable='between(t,${Math.max(0, startTime).toFixed(2)},${Math.max(0, endTime).toFixed(2)})'`,
+    )
+    .join(',');
 }
 
 export async function getVideoMetadata(file) {
@@ -118,7 +147,7 @@ function waitForSeek(video, targetTime) {
   });
 }
 
-export async function detectDynamicDelogoFilter(file, metadata) {
+export async function detectDynamicDelogoSegments(file, metadata) {
   const probeUrl = URL.createObjectURL(file);
   const video = document.createElement('video');
   video.src = probeUrl;
@@ -177,16 +206,5 @@ export async function detectDynamicDelogoFilter(file, metadata) {
     }
   }
 
-  if (!segments.length) {
-    return `delogo=x=${rect.x}:y=${rect.y}:w=${rect.w}:h=${rect.h}`;
-  }
-
-  return segments
-    .map(
-      ([startTime, endTime]) =>
-        `delogo=x=${rect.x}:y=${rect.y}:w=${rect.w}:h=${rect.h}:enable='between(t,${startTime.toFixed(
-          2,
-        )},${Math.min(endTime, metadata.duration).toFixed(2)})'`,
-    )
-    .join(',');
+  return segments;
 }

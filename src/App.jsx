@@ -5,21 +5,22 @@ import Controls from './components/Controls';
 import ProgressBar from './components/ProgressBar';
 import UploadBox from './components/UploadBox';
 import VideoPreview from './components/VideoPreview';
+import { clearSegments, getSegmentBlob, hasAllSegments, storeSegmentBlob } from './lib/resumeStore';
 import {
   MB,
   MAX_FILE_SIZE,
   PRESETS,
   PROCESS_CHUNK_SECONDS,
-  detectDynamicDelogoFilter,
+  buildDelogoFilter,
+  detectDynamicDelogoSegments,
   getOutputFps,
-  getScaledDelogo,
   getVideoMetadata,
   initialState,
 } from './lib/watermark';
 
 const MIN_DURATION = 0.5;
 const FFMPEG_CDN_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm';
-const JOB_STORAGE_KEY = 'watermark-remover-job-v1';
+const JOB_STORAGE_KEY = 'watermark-remover-job-v2';
 
 function getErrorDebugDetails(error) {
   if (!error) return ['Unknown processing error.'];
@@ -69,6 +70,18 @@ function getConcatFileList(segmentCount) {
   return Array.from({ length: segmentCount })
     .map((_, index) => `file 'segment-${String(index).padStart(4, '0')}.mp4'`)
     .join('\n');
+}
+
+function getJobId(file, config) {
+  return [
+    file.name,
+    file.size,
+    file.lastModified,
+    Math.round(config.duration * 100),
+    config.preset,
+    config.removeEnding,
+    config.dynamicDetection,
+  ].join(':');
 }
 
 export default function App() {
@@ -169,15 +182,12 @@ export default function App() {
         duration: metadata.duration,
         width: metadata.width,
         height: metadata.height,
-        fps: outputFps,
+        inputFps: metadata.fps,
+        outputFps,
         progress: 0,
         status: 'idle',
         outputUrl: '',
       }));
-
-      if (savedJob?.fileName && savedJob.fileName === file.name) {
-        appendLog(`Resume context loaded for ${file.name}. Press "Process Video" to continue.`);
-      }
 
       setLogs([]);
       appendDebugLog(
@@ -195,10 +205,6 @@ export default function App() {
     if (!ffmpegRef.current) {
       ffmpegRef.current = new FFmpeg();
       ffmpegRef.current.on('log', ({ message }) => appendLog(message));
-      ffmpegRef.current.on('progress', ({ progress }) => {
-        if (!isMountedRef.current) return;
-        setState((prev) => ({ ...prev, progress: Math.max(prev.progress, Math.round(progress * 100)) }));
-      });
     }
 
     if (!isFfmpegLoadedRef.current) {
@@ -239,7 +245,10 @@ export default function App() {
     [state.outputUrl],
   );
 
-  const onClearSavedJob = () => {
+  const onClearSavedJob = async () => {
+    if (savedJob?.jobId) {
+      await clearSegments(savedJob.jobId);
+    }
     clearSavedJob();
     setSavedJob(null);
     appendLog('Saved resume data was cleared.');
@@ -252,44 +261,71 @@ export default function App() {
 
     try {
       await ensureFfmpegLoaded();
-      if (isMountedRef.current) {
-        setState((prev) => ({ ...prev, status: 'processing', progress: 0 }));
-      }
+      setState((prev) => ({ ...prev, status: 'processing', progress: 0 }));
 
       const ffmpeg = ffmpegRef.current;
       await ffmpeg.writeFile('input.mp4', await fetchFile(state.file));
 
       const finalDuration = removeEnding ? Math.max(0, state.duration - 2.5) : state.duration;
       const segmentCount = Math.max(1, Math.ceil(finalDuration / PROCESS_CHUNK_SECONDS));
-      const fpsArgs = state.fps > 60 ? ['-r', '60'] : [];
-      const rect = getScaledDelogo(state.width, state.height);
-      const defaultFilter = `delogo=x=${rect.x}:y=${rect.y}:w=${rect.w}:h=${rect.h}`;
-      const delogoFilter = dynamicDetection ? await detectDynamicDelogoFilter(state.file, state) : defaultFilter;
+      const outputFpsArgs = state.inputFps > 60 ? ['-r', '60'] : [];
+
+      const jobId = getJobId(state.file, {
+        duration: finalDuration,
+        preset,
+        removeEnding,
+        dynamicDetection,
+      });
 
       const existingJob = loadSavedJob();
       const canResumeFromCheckpoint =
         existingJob &&
+        existingJob.jobId === jobId &&
         existingJob.fileName === state.file.name &&
         existingJob.fileSize === state.file.size &&
         existingJob.segmentCount === segmentCount;
-      let startSegment = canResumeFromCheckpoint ? existingJob.completedSegments || 0 : 0;
 
-      if (startSegment > 0) {
-        appendLog(`Resuming from segment ${startSegment + 1}/${segmentCount}.`);
-        appendLog('If this tab was closed, previous temporary FFmpeg chunks are unavailable and processing may restart from zero.');
-        startSegment = 0;
+      const previousComplete = canResumeFromCheckpoint ? existingJob.completedSegments || 0 : 0;
+      let startSegment = 0;
+
+      if (canResumeFromCheckpoint && previousComplete > 0) {
+        const hasSegments = await hasAllSegments(jobId, previousComplete);
+        if (hasSegments) {
+          startSegment = previousComplete;
+          appendLog(`Restored ${previousComplete} cached segment(s) from previous session.`);
+          for (let index = 0; index < previousComplete; index += 1) {
+            // eslint-disable-next-line no-await-in-loop
+            const blob = await getSegmentBlob(jobId, index);
+            if (blob) {
+              const data = new Uint8Array(await blob.arrayBuffer());
+              // eslint-disable-next-line no-await-in-loop
+              await ffmpeg.writeFile(`segment-${String(index).padStart(4, '0')}.mp4`, data);
+            }
+          }
+        } else {
+          appendLog('Resume cache is incomplete; starting from segment 1.');
+          await clearSegments(jobId);
+        }
+      } else {
+        await clearSegments(jobId);
       }
 
       if (removeEnding && finalDuration < MIN_DURATION) {
         appendLog('Ending trim skipped because resulting duration is too short.');
       }
 
-      appendDebugLog('pipeline', `preset=${preset} dynamicDetection=${dynamicDetection} removeEnding=${removeEnding} segments=${segmentCount}`);
+      const dynamicSegments = dynamicDetection ? await detectDynamicDelogoSegments(state.file, state) : null;
+      appendDebugLog(
+        'pipeline',
+        `preset=${preset} dynamicDetection=${dynamicDetection} removeEnding=${removeEnding} segments=${segmentCount} startSegment=${startSegment}`,
+      );
 
       for (let index = startSegment; index < segmentCount; index += 1) {
         const startTime = index * PROCESS_CHUNK_SECONDS;
         const segmentDuration = Math.min(PROCESS_CHUNK_SECONDS, Math.max(0, finalDuration - startTime));
         const segmentName = `segment-${String(index).padStart(4, '0')}.mp4`;
+        const segmentEnd = startTime + Math.max(segmentDuration, MIN_DURATION);
+        const segmentFilter = buildDelogoFilter(state.width, state.height, dynamicSegments, startTime, segmentEnd);
 
         const args = [
           '-ss',
@@ -297,9 +333,9 @@ export default function App() {
           '-i',
           'input.mp4',
           '-vf',
-          delogoFilter,
+          segmentFilter,
           ...PRESETS[preset],
-          ...fpsArgs,
+          ...outputFpsArgs,
           '-c:v',
           'libx264',
           '-c:a',
@@ -312,11 +348,16 @@ export default function App() {
         appendLog(`Running segment ${index + 1}/${segmentCount}: ffmpeg ${args.join(' ')}`);
         await ffmpeg.exec(args);
 
+        const segmentBytes = await ffmpeg.readFile(segmentName);
+        const segmentBlob = new Blob([segmentBytes.buffer], { type: 'video/mp4' });
+        await storeSegmentBlob(jobId, index, segmentBlob);
+
         const completedSegments = index + 1;
-        const progress = Math.round((completedSegments / (segmentCount + 1)) * 100);
+        const progress = Math.round((completedSegments / Math.max(1, segmentCount)) * 95);
         setState((prev) => ({ ...prev, progress }));
 
         const persistedJob = {
+          jobId,
           fileName: state.file.name,
           fileSize: state.file.size,
           updatedAt: Date.now(),
@@ -331,6 +372,7 @@ export default function App() {
         setSavedJob(persistedJob);
       }
 
+      setState((prev) => ({ ...prev, progress: 98 }));
       const concatFile = getConcatFileList(segmentCount);
       await ffmpeg.writeFile('concat-list.txt', concatFile);
       await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'concat-list.txt', '-c', 'copy', 'output.mp4']);
@@ -353,6 +395,7 @@ export default function App() {
       }));
 
       const doneJob = {
+        jobId,
         fileName: state.file.name,
         fileSize: state.file.size,
         updatedAt: Date.now(),
@@ -381,7 +424,9 @@ export default function App() {
       <header className="hero">
         <p className="eyebrow">NotebookLM Utility</p>
         <h1>Video Watermark Remover</h1>
-        <p className="subtext">Fast, client-side MP4 processing with resume metadata saved to local storage.</p>
+        <p className="subtext">
+          Fast, client-side MP4 processing with resumable checkpoints saved in local storage + IndexedDB.
+        </p>
       </header>
 
       {savedJob && (
@@ -413,7 +458,9 @@ export default function App() {
           <button type="button" onClick={onProcess} disabled={!hasInput || state.status === 'processing'}>
             {state.status === 'processing' ? 'Processing…' : 'Process Video'}
           </button>
-          <small>Output FPS: {state.fps.toFixed(2)} (capped at 60, never upscaled)</small>
+          <small>
+            Input FPS: {state.inputFps.toFixed(2)} → Output FPS: {state.outputFps.toFixed(2)} (max 60, never upscaled)
+          </small>
         </div>
 
         <ProgressBar progress={state.progress} status={state.status} />

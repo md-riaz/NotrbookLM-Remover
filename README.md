@@ -10,7 +10,7 @@ React + FFmpeg WASM implementation of the NotebookLM watermark remover flow.
 - Delogo pipeline with default rectangle `x=1104:y=656:w=133:h=22` (auto-scaled for non-1280x720 videos).
 - Optional dynamic detection via `<video>` + `<canvas>` variance sampling.
 - Optional ending trim (`duration - 2.5s`).
-- Processing checkpoints are saved in `localStorage` so session state can be restored after reload/tab close.
+- Processing checkpoints are saved in `localStorage`, while segment outputs are persisted in `IndexedDB` so processing can resume after reload/tab close.
 - Segment-based processing to keep progress durable and improve perceived performance.
 - Output FPS handling:
   - never upscales low-FPS inputs,
